@@ -67,8 +67,9 @@
   .dbtn.empty{visibility:hidden;}
   #u{grid-column:2;grid-row:1}#l{grid-column:1;grid-row:2}#r{grid-column:3;grid-row:2}#d{grid-column:2;grid-row:3}
   #right-side{display:flex;flex-direction:column;align-items:center;gap:6px;}
-  #pauseBtn{background:var(--panel);border:2px solid var(--neon);color:var(--neon);border-radius:12px;
-    width:64px;height:46px;font-size:13px;font-weight:bold;cursor:pointer;}
+  #pauseBtn,#soundBtn{background:var(--panel);border:2px solid var(--neon);color:var(--neon);border-radius:12px;
+    width:74px;height:42px;font-size:12px;font-weight:bold;cursor:pointer;}
+  #soundBtn.off{border-color:#6a6a8a;color:#6a6a8a;}
   .hint{font-size:11px;color:#9b8fd6;text-align:center;margin-top:6px;}
   @media (min-width:760px){ #pad{display:none;} }
 </style>
@@ -115,6 +116,7 @@
     </div>
     <div id="right-side">
       <button id="pauseBtn">PAUSE</button>
+      <button id="soundBtn">SOUND&nbsp;ON</button>
     </div>
   </div>
   <div class="hint">Tip: keep momentum, line up the paint can, then sweep the matching gems before the clock runs out.</div>
@@ -135,6 +137,103 @@
     purple: '#c46bff'
   };
   const COLOR_KEYS = Object.keys(COLORS);
+
+  // ============ NES-style audio (2A03 emulation: pulse + triangle + noise) ============
+  // Faithful to the original: an upbeat chiptune on the menu screens, and during
+  // play NO music -- only sound effects, with the bounce being the signature one.
+  const Audio2A03 = (function(){
+    let ac=null, master=null, noiseBuf=null, started=false, muted=false;
+    let lastBounce=0;
+    function init(){
+      if(started) return;
+      const AC=window.AudioContext||window.webkitAudioContext;
+      if(!AC) return;
+      ac=new AC();
+      master=ac.createGain(); master.gain.value=0.5; master.connect(ac.destination);
+      // white-noise buffer for percussion / explosions (NES noise channel)
+      noiseBuf=ac.createBuffer(1, ac.sampleRate*1, ac.sampleRate);
+      const d=noiseBuf.getChannelData(0);
+      for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
+      started=true;
+    }
+    function resume(){ if(ac&&ac.state==='suspended') ac.resume(); }
+    // one tone with a fast envelope -> classic blippy NES voice
+    function tone(freq,start,dur,type,vol){
+      if(!ac||muted) return;
+      const o=ac.createOscillator(), g=ac.createGain();
+      o.type=type||'square'; o.frequency.setValueAtTime(freq,start);
+      g.gain.setValueAtTime(0.0001,start);
+      g.gain.exponentialRampToValueAtTime(vol,start+0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001,start+dur);
+      o.connect(g); g.connect(master); o.start(start); o.stop(start+dur+0.02);
+      return o;
+    }
+    function slide(f1,f2,start,dur,type,vol){
+      if(!ac||muted) return;
+      const o=ac.createOscillator(), g=ac.createGain();
+      o.type=type||'square'; o.frequency.setValueAtTime(f1,start);
+      o.frequency.exponentialRampToValueAtTime(Math.max(20,f2),start+dur);
+      g.gain.setValueAtTime(0.0001,start);
+      g.gain.exponentialRampToValueAtTime(vol,start+0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001,start+dur);
+      o.connect(g); g.connect(master); o.start(start); o.stop(start+dur+0.02);
+    }
+    function noise(start,dur,vol,lp){
+      if(!ac||muted) return;
+      const s=ac.createBufferSource(); s.buffer=noiseBuf;
+      const g=ac.createGain(), f=ac.createBiquadFilter();
+      f.type='lowpass'; f.frequency.value=lp||4000;
+      g.gain.setValueAtTime(vol,start);
+      g.gain.exponentialRampToValueAtTime(0.0001,start+dur);
+      s.connect(f); f.connect(g); g.connect(master); s.start(start); s.stop(start+dur);
+    }
+    // ---- sound effects (gameplay) ----
+    const sfx={
+      bounce(){ if(!ac) return; const t=ac.currentTime;
+        if(t-lastBounce<0.045) return; lastBounce=t;
+        slide(320,150,t,0.07,'square',0.10); },
+      gem(){ if(!ac) return; const t=ac.currentTime;
+        tone(659,t,0.07,'square',0.16); tone(988,t+0.07,0.09,'square',0.16); },
+      paint(){ if(!ac) return; const t=ac.currentTime;
+        tone(523,t,0.05,'square',0.14); tone(659,t+0.05,0.05,'square',0.14);
+        tone(784,t+0.10,0.06,'square',0.14); },
+      smash(){ if(!ac) return; const t=ac.currentTime;
+        noise(t,0.18,0.25,3000); slide(220,60,t,0.18,'square',0.12); },
+      die(){ if(!ac) return; const t=ac.currentTime;
+        slide(420,70,t,0.45,'square',0.18); noise(t,0.45,0.18,2500); },
+      clear(){ if(!ac) return; const t=ac.currentTime; const n=[523,659,784,1046];
+        n.forEach((f,i)=>{ tone(f,t+i*0.11,0.12,'square',0.17);
+          tone(f/2,t+i*0.11,0.12,'triangle',0.20); }); }
+    };
+    // ---- menu/title chiptune (C - Am - F - G), no drums-heavy, just upbeat ----
+    // played ONLY on menu screens, exactly like the original (silent during play)
+    const STEP=0.20;                    // eighth note
+    const LEAD=[523,659,784,659, 440,523,659,523, 349,440,523,440, 392,494,587,494];
+    const BASS=[131,110,87,98];         // C3,A2,F2,G2 (one per 4 steps)
+    let musicTimer=null, nextStepTime=0, step=0;
+    function schedule(){
+      if(!ac||muted) return;
+      const ahead=ac.currentTime+0.15;
+      while(nextStepTime<ahead){
+        const t=nextStepTime;
+        tone(LEAD[step%16],t,STEP*0.9,'square',0.12);              // lead pulse
+        if(step%2===0) tone(BASS[Math.floor((step%16)/4)],t,STEP*1.6,'triangle',0.22); // bass
+        if(step%2===1) noise(t,0.03,0.05,8000);                    // hi-hat
+        step++; nextStepTime+=STEP;
+      }
+    }
+    function startMusic(){
+      if(!ac||muted||musicTimer) return;
+      step=0; nextStepTime=ac.currentTime+0.06;
+      schedule();
+      musicTimer=setInterval(schedule,40);
+    }
+    function stopMusic(){ if(musicTimer){ clearInterval(musicTimer); musicTimer=null; } }
+    function setMuted(m){ muted=m; if(m){ stopMusic(); if(master) master.gain.value=0; }
+      else if(master){ master.gain.value=0.5; } }
+    return { init, resume, sfx, startMusic, stopMusic, setMuted,
+             get started(){return started;}, get muted(){return muted;} };
+  })();
 
   // ---- level layouts ----
   // # wall  . floor  S start
@@ -296,6 +395,7 @@
             if(o.vy>0){ o.y=top-r; } else if(o.vy<0){ o.y=bot+r; }
             o.vy=-o.vy; o.diry=-o.diry;
           }
+          Audio2A03.sfx.bounce();
         }
       }
     }
@@ -311,6 +411,7 @@
   function loseLife(){
     lives--;
     flash=0.4;
+    Audio2A03.sfx.die();
     spawnParticles(ball.x,ball.y,ball.color,16);
     if(lives<=0){ gameOver(); return; }
     // reset position
@@ -339,7 +440,7 @@
       const d=Math.hypot(e.x-ball.x,e.y-ball.y);
       if(d < ball.r + CELL*0.30){
         if(e.color===ball.color){
-          e.alive=false; score+=150; spawnParticles(e.x,e.y,e.color,18); updateHUD();
+          e.alive=false; score+=150; spawnParticles(e.x,e.y,e.color,18); Audio2A03.sfx.smash(); updateHUD();
         } else {
           loseLife(); return;
         }
@@ -349,7 +450,7 @@
     // paint cans
     for(const c of cans){
       const d=Math.hypot(c.x-ball.x,c.y-ball.y);
-      if(d < ball.r + CELL*0.28){ if(ball.color!==c.color){ ball.color=c.color; spawnParticles(ball.x,ball.y,c.color,10);} }
+      if(d < ball.r + CELL*0.28){ if(ball.color!==c.color){ ball.color=c.color; spawnParticles(ball.x,ball.y,c.color,10); Audio2A03.sfx.paint();} }
     }
 
     // gems
@@ -357,7 +458,7 @@
       if(!g.alive) continue;
       const d=Math.hypot(g.x-ball.x,g.y-ball.y);
       if(d < ball.r + CELL*0.26 && g.color===ball.color){
-        g.alive=false; gemsLeft--; score+=100; spawnParticles(g.x,g.y,g.color,12); updateHUD();
+        g.alive=false; gemsLeft--; score+=100; spawnParticles(g.x,g.y,g.color,12); Audio2A03.sfx.gem(); updateHUD();
         if(gemsLeft<=0){ levelClear(); return; }
       }
     }
@@ -511,8 +612,9 @@
     $('lives').textContent=lives;
   }
 
-  function showOverlay(html){ const o=$('overlay'); o.innerHTML=html; o.classList.remove('hidden'); }
-  function hideOverlay(){ $('overlay').classList.add('hidden'); }
+  function showOverlay(html){ const o=$('overlay'); o.innerHTML=html; o.classList.remove('hidden');
+    if(Audio2A03.started) Audio2A03.startMusic(); }   // menu music plays on overlay screens only
+  function hideOverlay(){ $('overlay').classList.add('hidden'); Audio2A03.stopMusic(); }
 
   function startGame(){
     level=0; score=0; lives=3; dead=false;
@@ -523,6 +625,7 @@
 
   function levelClear(){
     running=false;
+    Audio2A03.sfx.clear();
     score+=timeLeft*5;
     if(level+1>=LEVELS.length){
       // win all -> loop with bonus but show victory
@@ -559,16 +662,33 @@
     else hideOverlay();
   }
 
+  // ---- audio bootstrap: browsers require a user gesture to start sound ----
+  function audioGesture(){
+    Audio2A03.init(); Audio2A03.resume();
+    // if a menu screen is currently up, kick off the title tune
+    if(!$('overlay').classList.contains('hidden') && !Audio2A03.muted) Audio2A03.startMusic();
+  }
+  function toggleSound(){
+    Audio2A03.init();
+    const m=!Audio2A03.muted; Audio2A03.setMuted(m);
+    const b=$('soundBtn');
+    b.classList.toggle('off',m); b.innerHTML = m ? 'SOUND&nbsp;OFF' : 'SOUND&nbsp;ON';
+    if(!m){ Audio2A03.resume(); if(!$('overlay').classList.contains('hidden')) Audio2A03.startMusic(); }
+  }
+
   // ---- input ----
   document.addEventListener('keydown',e=>{
     const k=e.key.toLowerCase();
     if(['arrowup','arrowdown','arrowleft','arrowright',' '].includes(k)) e.preventDefault();
+    audioGesture();
     if(k==='arrowup'||k==='w') setDir(0,-1);
     else if(k==='arrowdown'||k==='s') setDir(0,1);
     else if(k==='arrowleft'||k==='a') setDir(-1,0);
     else if(k==='arrowright'||k==='d') setDir(1,0);
     else if(k==='p') togglePause();
+    else if(k==='m') toggleSound();
   },{passive:false});
+  window.addEventListener('pointerdown',audioGesture);
 
   // touch / mouse dpad
   function bindPad(id,dx,dy){
@@ -589,9 +709,10 @@
   },{passive:true});
 
   $('pauseBtn').addEventListener('click',togglePause);
+  $('soundBtn').addEventListener('click',function(e){ e.stopPropagation(); toggleSound(); });
 
   // start
-  $('startBtn').addEventListener('click',startGame);
+  $('startBtn').addEventListener('click',function(){ audioGesture(); startGame(); });
 
   // initial draw of an empty board behind overlay
   buildLevel(0); running=false; updateHUD(); $('time').textContent='--';
