@@ -366,44 +366,58 @@
     return grid[cy][cx]===1;
   }
 
-  // circle vs grid, axis separated. returns reflection
   function moveCircle(o,dt){
-    // X
     o.x += o.vx*dt;
-    resolveAxis(o,'x');
-    // Y
     o.y += o.vy*dt;
-    resolveAxis(o,'y');
+    collideCircle(o, o.r, true);
   }
-  function resolveAxis(o,axis){
-    const r=o.r;
-    const minCx=Math.floor((o.x-r)/CELL), maxCx=Math.floor((o.x+r)/CELL);
-    const minCy=Math.floor((o.y-r)/CELL), maxCy=Math.floor((o.y+r)/CELL);
-    let hit=false, corr=null;   // resolve ALL overlapping cells, but bounce only ONCE per axis
-    for(let cy=minCy;cy<=maxCy;cy++){
-      for(let cx=minCx;cx<=maxCx;cx++){
-        if(!isWall(cx,cy)) continue;
-        const left=cx*CELL, top=cy*CELL, right=left+CELL, bot=top+CELL;
-        const nx=Math.max(left,Math.min(o.x,right));
-        const ny=Math.max(top,Math.min(o.y,bot));
-        const ddx=o.x-nx, ddy=o.y-ny;
-        if(ddx*ddx+ddy*ddy < r*r){
-          hit=true;
-          if(axis==='x'){
-            const c = o.vx>0 ? left-r : (o.vx<0 ? right+r : o.x);
-            corr = corr===null ? c : (o.vx>0 ? Math.min(corr,c) : Math.max(corr,c));
-          } else {
-            const c = o.vy>0 ? top-r : (o.vy<0 ? bot+r : o.y);
-            corr = corr===null ? c : (o.vy>0 ? Math.min(corr,c) : Math.max(corr,c));
-          }
+
+  // overlap of a circle with one wall cell -> {pen, nx, ny} (minimum-translation vector) or null
+  function cellMTV(o,r,cx,cy){
+    const left=cx*CELL, top=cy*CELL, right=left+CELL, bot=top+CELL;
+    const px=Math.max(left,Math.min(o.x,right));
+    const py=Math.max(top,Math.min(o.y,bot));
+    const dx=o.x-px, dy=o.y-py, d2=dx*dx+dy*dy;
+    if(d2>=r*r) return null;                       // no overlap
+    if(d2>1e-6){                                    // face / corner contact
+      const d=Math.sqrt(d2);
+      return {pen:r-d, nx:dx/d, ny:dy/d};
+    }
+    // center is inside the cell -> push out the nearest face
+    const dl=o.x-left, dr=right-o.x, dtp=o.y-top, dbm=bot-o.y;
+    const m=Math.min(dl,dr,dtp,dbm);
+    if(m===dl) return {pen:r+dl, nx:-1, ny:0};
+    if(m===dr) return {pen:r+dr, nx:1, ny:0};
+    if(m===dtp) return {pen:r+dtp, nx:0, ny:-1};
+    return {pen:r+dbm, nx:0, ny:1};
+  }
+
+  // robust circle-vs-tilemap: always eject fully (so the dude can never get lodged in a tile),
+  // and reflect velocity off the contact normal (only when moving into the wall)
+  function collideCircle(o,r,sound){
+    let bounced=false;
+    for(let iter=0; iter<4; iter++){
+      const minCx=Math.floor((o.x-r)/CELL), maxCx=Math.floor((o.x+r)/CELL);
+      const minCy=Math.floor((o.y-r)/CELL), maxCy=Math.floor((o.y+r)/CELL);
+      let best=null;
+      for(let cy=minCy;cy<=maxCy;cy++){
+        for(let cx=minCx;cx<=maxCx;cx++){
+          if(!isWall(cx,cy)) continue;
+          const m=cellMTV(o,r,cx,cy);
+          if(m && (!best || m.pen>best.pen)) best=m;   // resolve deepest overlap first
         }
       }
+      if(!best) break;                                 // fully clear of walls
+      o.x += best.nx*best.pen;                         // eject out of the wall
+      o.y += best.ny*best.pen;
+      const vdot=o.vx*best.nx + o.vy*best.ny;
+      if(vdot<0){ o.vx -= 2*vdot*best.nx; o.vy -= 2*vdot*best.ny; bounced=true; }
     }
-    if(hit){
-      if(axis==='x'){ if(corr!==null) o.x=corr; o.vx=-o.vx; o.dirx=-o.dirx; }
-      else { if(corr!==null) o.y=corr; o.vy=-o.vy; o.diry=-o.diry; }
-      Audio2A03.sfx.bounce();
+    if(bounced){
+      if('dirx' in o && o.spd){ o.dirx=o.vx/o.spd; o.diry=o.vy/o.spd; }
+      if(sound) Audio2A03.sfx.bounce();
     }
+    return bounced;
   }
 
   function spawnParticles(x,y,color,n){
@@ -439,8 +453,9 @@
     // enemies
     for(const e of enemies){
       if(!e.alive) continue;
-      e.x += e.vx*e.spd*dt; resolveEnemyAxis(e,'x');
-      e.y += e.vy*e.spd*dt; resolveEnemyAxis(e,'y');
+      e.x += e.vx*e.spd*dt;
+      e.y += e.vy*e.spd*dt;
+      collideCircle(e, CELL*0.30, false);
       // collide with ball
       const d=Math.hypot(e.x-ball.x,e.y-ball.y);
       if(d < ball.r + CELL*0.30){
@@ -471,30 +486,6 @@
     // particles
     for(const p of particles){ p.x+=p.vx*dt; p.y+=p.vy*dt; p.vx*=0.92; p.vy*=0.92; p.life-=dt; }
     particles=particles.filter(p=>p.life>0);
-  }
-
-  function resolveEnemyAxis(e,axis){
-    const r=CELL*0.30;
-    const minCx=Math.floor((e.x-r)/CELL), maxCx=Math.floor((e.x+r)/CELL);
-    const minCy=Math.floor((e.y-r)/CELL), maxCy=Math.floor((e.y+r)/CELL);
-    let hit=false, corr=null;
-    for(let cy=minCy;cy<=maxCy;cy++) for(let cx=minCx;cx<=maxCx;cx++){
-      if(!isWall(cx,cy)) continue;
-      const left=cx*CELL,top=cy*CELL,right=left+CELL,bot=top+CELL;
-      const nx=Math.max(left,Math.min(e.x,right)), ny=Math.max(top,Math.min(e.y,bot));
-      const ddx=e.x-nx, ddy=e.y-ny;
-      if(ddx*ddx+ddy*ddy<r*r){
-        hit=true;
-        if(axis==='x'){ const c=e.vx>0?left-r:(e.vx<0?right+r:e.x);
-          corr = corr===null ? c : (e.vx>0?Math.min(corr,c):Math.max(corr,c)); }
-        else { const c=e.vy>0?top-r:(e.vy<0?bot+r:e.y);
-          corr = corr===null ? c : (e.vy>0?Math.min(corr,c):Math.max(corr,c)); }
-      }
-    }
-    if(hit){
-      if(axis==='x'){ if(corr!==null)e.x=corr; e.vx=-e.vx; }
-      else { if(corr!==null)e.y=corr; e.vy=-e.vy; }
-    }
   }
 
   // ---- drawing ----
