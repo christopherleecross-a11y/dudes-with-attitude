@@ -379,25 +379,30 @@
     const r=o.r;
     const minCx=Math.floor((o.x-r)/CELL), maxCx=Math.floor((o.x+r)/CELL);
     const minCy=Math.floor((o.y-r)/CELL), maxCy=Math.floor((o.y+r)/CELL);
+    let hit=false, corr=null;   // resolve ALL overlapping cells, but bounce only ONCE per axis
     for(let cy=minCy;cy<=maxCy;cy++){
       for(let cx=minCx;cx<=maxCx;cx++){
         if(!isWall(cx,cy)) continue;
         const left=cx*CELL, top=cy*CELL, right=left+CELL, bot=top+CELL;
-        // closest point
         const nx=Math.max(left,Math.min(o.x,right));
         const ny=Math.max(top,Math.min(o.y,bot));
         const ddx=o.x-nx, ddy=o.y-ny;
         if(ddx*ddx+ddy*ddy < r*r){
+          hit=true;
           if(axis==='x'){
-            if(o.vx>0){ o.x=left-r; } else if(o.vx<0){ o.x=right+r; }
-            o.vx=-o.vx; o.dirx=-o.dirx;
+            const c = o.vx>0 ? left-r : (o.vx<0 ? right+r : o.x);
+            corr = corr===null ? c : (o.vx>0 ? Math.min(corr,c) : Math.max(corr,c));
           } else {
-            if(o.vy>0){ o.y=top-r; } else if(o.vy<0){ o.y=bot+r; }
-            o.vy=-o.vy; o.diry=-o.diry;
+            const c = o.vy>0 ? top-r : (o.vy<0 ? bot+r : o.y);
+            corr = corr===null ? c : (o.vy>0 ? Math.min(corr,c) : Math.max(corr,c));
           }
-          Audio2A03.sfx.bounce();
         }
       }
+    }
+    if(hit){
+      if(axis==='x'){ if(corr!==null) o.x=corr; o.vx=-o.vx; o.dirx=-o.dirx; }
+      else { if(corr!==null) o.y=corr; o.vy=-o.vy; o.diry=-o.diry; }
+      Audio2A03.sfx.bounce();
     }
   }
 
@@ -472,15 +477,23 @@
     const r=CELL*0.30;
     const minCx=Math.floor((e.x-r)/CELL), maxCx=Math.floor((e.x+r)/CELL);
     const minCy=Math.floor((e.y-r)/CELL), maxCy=Math.floor((e.y+r)/CELL);
+    let hit=false, corr=null;
     for(let cy=minCy;cy<=maxCy;cy++) for(let cx=minCx;cx<=maxCx;cx++){
       if(!isWall(cx,cy)) continue;
       const left=cx*CELL,top=cy*CELL,right=left+CELL,bot=top+CELL;
       const nx=Math.max(left,Math.min(e.x,right)), ny=Math.max(top,Math.min(e.y,bot));
       const ddx=e.x-nx, ddy=e.y-ny;
       if(ddx*ddx+ddy*ddy<r*r){
-        if(axis==='x'){ if(e.vx>0)e.x=left-r; else if(e.vx<0)e.x=right+r; e.vx=-e.vx; }
-        else { if(e.vy>0)e.y=top-r; else if(e.vy<0)e.y=bot+r; e.vy=-e.vy; }
+        hit=true;
+        if(axis==='x'){ const c=e.vx>0?left-r:(e.vx<0?right+r:e.x);
+          corr = corr===null ? c : (e.vx>0?Math.min(corr,c):Math.max(corr,c)); }
+        else { const c=e.vy>0?top-r:(e.vy<0?bot+r:e.y);
+          corr = corr===null ? c : (e.vy>0?Math.min(corr,c):Math.max(corr,c)); }
       }
+    }
+    if(hit){
+      if(axis==='x'){ if(corr!==null)e.x=corr; e.vx=-e.vx; }
+      else { if(corr!==null)e.y=corr; e.vy=-e.vy; }
     }
   }
 
