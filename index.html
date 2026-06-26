@@ -347,7 +347,7 @@
     timeLeft = 45 + idx*8;
     // dude
     const startColor = gems.length? gems[0].color : 'red';
-    ball = {x:start.x, y:start.y, r:CELL*0.34, color:startColor,
+    ball = {x:start.x, y:start.y, r:CELL*0.27, color:startColor,
             vx:0, vy:0, spd:170+idx*14, dirx:0, diry:0, home:{x:start.x,y:start.y}};
     setDir(1,0); // start rolling right
     updateHUD();
